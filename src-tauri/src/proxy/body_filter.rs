@@ -17,6 +17,10 @@
 
 use serde_json::Value;
 use std::collections::HashSet;
+use std::fs;
+
+const CODEX_IMAGE_GENERATION_KEY: &str = "enableCodexImageGeneration";
+const RESPONSE_IMAGE_GENERATION_TOOL: &str = "image_generation";
 
 /// 过滤私有参数（以 `_` 开头的字段）
 ///
@@ -67,7 +71,64 @@ pub fn filter_private_params(body: Value) -> Value {
 /// ```
 pub fn filter_private_params_with_whitelist(body: Value, whitelist: &[String]) -> Value {
     let whitelist_set: HashSet<&str> = whitelist.iter().map(|s| s.as_str()).collect();
-    filter_recursive_with_whitelist(body, &mut Vec::new(), &mut Vec::new(), &whitelist_set)
+    let filtered = filter_recursive_with_whitelist(body, &mut Vec::new(), &mut Vec::new(), &whitelist_set);
+    filter_codex_image_generation_tools_if_needed(filtered)
+}
+
+fn filter_codex_image_generation_tools_if_needed(mut body: Value) -> Value {
+    if !crate::settings::preserve_codex_official_auth_on_switch()
+        || codex_image_generation_enabled()
+        || !looks_like_responses_request(&body)
+    {
+        return body;
+    }
+
+    let removed = strip_response_image_generation_tools(&mut body);
+    if removed > 0 {
+        log::info!(
+            "[BodyFilter] Removed {removed} Codex Responses image_generation tool(s); enable Codex image generation to pass them through"
+        );
+    }
+    body
+}
+
+fn codex_image_generation_enabled() -> bool {
+    let path = crate::config::get_home_dir()
+        .join(".cc-switch")
+        .join("settings.json");
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|value| value.get(CODEX_IMAGE_GENERATION_KEY).and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn looks_like_responses_request(body: &Value) -> bool {
+    body.get("input").is_some() && body.get("tools").is_some()
+}
+
+fn strip_response_image_generation_tools(body: &mut Value) -> usize {
+    let Some(obj) = body.as_object_mut() else {
+        return 0;
+    };
+    let Some(tools) = obj.get_mut("tools").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+
+    let before = tools.len();
+    tools.retain(|tool| !is_image_generation_tool(tool));
+    let removed = before.saturating_sub(tools.len());
+
+    if tools.is_empty() {
+        obj.remove("tools");
+    }
+
+    removed
+}
+
+fn is_image_generation_tool(tool: &Value) -> bool {
+    tool.get("type").and_then(Value::as_str) == Some(RESPONSE_IMAGE_GENERATION_TOOL)
+        || tool.get("name").and_then(Value::as_str) == Some(RESPONSE_IMAGE_GENERATION_TOOL)
 }
 
 /// 递归过滤实现（支持白名单）
@@ -335,5 +396,81 @@ mod tests {
         let output2 = filter_private_params_with_whitelist(input, &[]);
 
         assert_eq!(output1, output2);
+    }
+
+    #[test]
+    fn test_strip_response_image_generation_tool_by_type() {
+        let mut input = json!({
+            "input": "hello",
+            "tools": [
+                {"type": "image_generation"},
+                {"type": "function", "name": "lookup"}
+            ]
+        });
+
+        let removed = strip_response_image_generation_tools(&mut input);
+
+        assert_eq!(removed, 1);
+        assert_eq!(input["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(input["tools"][0]["name"], "lookup");
+    }
+
+    #[test]
+    fn test_strip_response_image_generation_tool_by_name() {
+        let mut input = json!({
+            "input": "hello",
+            "tools": [
+                {"type": "function", "name": "image_generation"},
+                {"type": "custom", "name": "shell"}
+            ]
+        });
+
+        let removed = strip_response_image_generation_tools(&mut input);
+
+        assert_eq!(removed, 1);
+        assert_eq!(input["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(input["tools"][0]["name"], "shell");
+    }
+
+    #[test]
+    fn test_strip_response_image_generation_removes_empty_tools_field() {
+        let mut input = json!({
+            "input": "hello",
+            "tools": [{"type": "image_generation"}]
+        });
+
+        let removed = strip_response_image_generation_tools(&mut input);
+
+        assert_eq!(removed, 1);
+        assert!(input.get("tools").is_none());
+    }
+
+    #[test]
+    fn test_strip_response_image_generation_keeps_normal_tools() {
+        let mut input = json!({
+            "input": "hello",
+            "tools": [
+                {"type": "function", "name": "lookup"},
+                {"type": "custom", "name": "shell"},
+                {"type": "tool_search"},
+                {"type": "namespace", "name": "web"}
+            ]
+        });
+        let original = input.clone();
+
+        let removed = strip_response_image_generation_tools(&mut input);
+
+        assert_eq!(removed, 0);
+        assert_eq!(input, original);
+    }
+
+    #[test]
+    fn test_non_responses_shape_is_not_considered_responses_request() {
+        let input = json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "image_generation"}]
+        });
+
+        assert!(!looks_like_responses_request(&input));
     }
 }
