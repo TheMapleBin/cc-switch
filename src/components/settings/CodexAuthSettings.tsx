@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { History, KeyRound } from "lucide-react";
+import { History, Image as ImageIcon, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import { ToggleRow } from "@/components/ui/toggle-row";
@@ -23,6 +23,11 @@ export function CodexAuthSettings({
   const [showEnableConfirm, setShowEnableConfirm] = useState(false);
   const [showDisableConfirm, setShowDisableConfirm] = useState(false);
   const [hasUnifyBackup, setHasUnifyBackup] = useState(false);
+
+  const preserveOfficialAuth = settings.preserveCodexOfficialAuthOnSwitch ?? false;
+  const enableCodexImageGeneration =
+    ((settings as unknown as { enableCodexImageGeneration?: boolean })
+      .enableCodexImageGeneration ?? false) && preserveOfficialAuth;
 
   const handleUnifyHistoryChange = (checked: boolean) => {
     if (checked) {
@@ -99,9 +104,27 @@ export function CodexAuthSettings({
         icon={<KeyRound className="h-4 w-4 text-emerald-500" />}
         title={t("settings.preserveCodexOfficialAuthOnSwitch")}
         description={t("settings.preserveCodexOfficialAuthOnSwitchDescription")}
-        checked={settings.preserveCodexOfficialAuthOnSwitch ?? false}
+        checked={preserveOfficialAuth}
         onCheckedChange={(value) =>
           onChange({ preserveCodexOfficialAuthOnSwitch: value })
+        }
+      />
+
+      <ToggleRow
+        icon={<ImageIcon className="h-4 w-4 text-pink-500" />}
+        title={t("settings.enableCodexImageGeneration", {
+          defaultValue: "启用生图功能",
+        })}
+        description={t("settings.enableCodexImageGenerationDescription", {
+          defaultValue:
+            "开启后允许 Codex 请求携带 Responses API 的 image_generation 工具；如果第三方中转站不支持生图，请关闭此项。",
+        })}
+        checked={enableCodexImageGeneration}
+        disabled={!preserveOfficialAuth}
+        onCheckedChange={(value) =>
+          onChange({
+            enableCodexImageGeneration: value,
+          } as Partial<SettingsFormState>)
         }
       />
 
